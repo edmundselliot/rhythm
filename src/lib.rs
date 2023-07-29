@@ -18,10 +18,15 @@ struct Bucket {
     refill_interval_ms: u64,
     // When the bucket was last refilled
     last_filled: Instant,
+
+    // Counters
+    requests_allowed:u64,
+    requests_denied:u64,
 }
 
 impl<T: Hash + Eq> RateLimiter<T> {
     /// Create a new RateLimiter with the given default values.
+    /// Note: Whatever type is chosen for the key must implement the Hash and Eq traits.
     ///
     /// # Arguments
     ///
@@ -60,6 +65,8 @@ impl<T: Hash + Eq> RateLimiter<T> {
             refill_rate: self.default_refill_rate,
             refill_interval_ms: self.default_refill_interval_ms,
             last_filled: Instant::now(),
+            requests_allowed: 0,
+            requests_denied: 0,
         });
 
         bucket.request()
@@ -81,6 +88,8 @@ impl<T: Hash + Eq> RateLimiter<T> {
             refill_rate: refill_rate,
             refill_interval_ms: self.default_refill_interval_ms,
             last_filled: Instant::now(),
+            requests_allowed: 0,
+            requests_denied: 0,
         });
 
         bucket.last_filled = Instant::now();
@@ -95,9 +104,7 @@ impl Bucket {
 
         let time_passed = now.duration_since(self.last_filled);
 
-        // Tweak this if we want to move to microseconds or nanoseconds
         let ms_passed = time_passed.as_millis() as u64;
-
         let tokens_to_add = ms_passed * self.refill_rate as u64 / self.refill_interval_ms;
 
         // Add the tokens to the bucket, but don't exceed the bucket size
@@ -114,11 +121,11 @@ impl Bucket {
         self.refill();
 
         if self.tokens > 0 {
-            // Allow the request
             self.tokens -= 1;
+            self.requests_allowed += 1;
             true
         } else {
-            // Fail the request
+            self.requests_denied += 1;
             false
         }
     }
@@ -131,27 +138,65 @@ mod tests {
 
     #[test]
     fn test_slow_limiter() {
-        // Rate limiter with default bucket size of 10 and refill rate of 1 token per second
-        let mut ratelimiter: RateLimiter<String> = RateLimiter::new(10, 1, 1000);
+        test_limiter(10, 1, 1000);
+    }
 
-        // Test that we can make 10 requests in a row
+    #[test]
+    fn test_fast_limiter() {
+        test_limiter(10, 1, 1);
+    }
+
+    #[test]
+    fn test_fast_big_limiter() {
+        test_limiter(1000000, 1, 1);
+    }
+
+    #[test]
+    fn test_big_refill_limiter() {
+        test_limiter(100, 100, 1);
+    }
+
+    fn test_limiter(bucketsize: u32, refillrate: u32, refillinterval_ms: u64) {
+        // Rate limiter with default bucket size of 10 and refill rate of 1 token per 100 ms
+        let mut ratelimiter: RateLimiter<String> = RateLimiter::new(
+            bucketsize,
+            refillrate,
+            refillinterval_ms
+        );
+
+        // Test that we can make a bunch of requests in a row
+        let start_time = Instant::now();
         let sample_key = "Erin".to_string();
-        for _ in 0..10 {
+        for _ in 0..bucketsize {
             assert!(ratelimiter.request(sample_key.clone()));
         }
 
-        // Test that we can't make an 11th request
-        assert!(!ratelimiter.request(sample_key.clone()));
+        // Test that we can't make an extra request
+        if start_time.elapsed().as_millis() < refillinterval_ms as u128 {
+            assert!(!ratelimiter.request(sample_key.clone()));
+        }
 
         // Test that an unrelated key is not affected
-        let unrelated_key = "Honey".to_string();
-        for _ in 0..10 {
+        let unrelated_key = "Coconut".to_string();
+        for _ in 0..bucketsize {
             assert!(ratelimiter.request(unrelated_key.clone()));
         }
 
-        // Test that we can make an 11th request after waiting 1 second
-        std::thread::sleep(Duration::from_millis(1000));
-        assert!(ratelimiter.request(sample_key.clone()));
+        // Exhaust the bucket
+        while ratelimiter.request(sample_key.clone()) {
+            continue;
+        }
+
+        // Test that we can make an extra request after for bucket refill
+        let start_time = Instant::now();
+        std::thread::sleep(Duration::from_millis(refillinterval_ms));
+        let actual_sleep_time = start_time.elapsed().as_millis();
+        let refills_expected = actual_sleep_time as u32 / refillinterval_ms as u32;
+        let tokens_expected = bucketsize.min(refills_expected * refillrate);
+
+        for _ in 0..tokens_expected {
+            assert!(ratelimiter.request(sample_key.clone()));
+        }
     }
 
     #[test]
