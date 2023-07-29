@@ -1,6 +1,6 @@
 use std::{collections::HashMap, time::{Instant, Duration}, hash::Hash};
 
-struct RateLimiter<T: Hash + Eq> {
+pub struct RateLimiter<T: Hash + Eq> {
     default_bucket_size: u32,
     default_refill_rate: u32,
     default_refill_interval_ms: u64,
