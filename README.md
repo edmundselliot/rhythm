@@ -5,8 +5,8 @@ Rhythm's Rate Limiter is a thread-safe rate limiting library implemented in Rust
 ## Features
 
 - **Thread-Safe**: Rhythm's Rate Limiter uses a `Mutex` to ensure that it can be safely used from multiple threads.
-- **Customizable**: You can customize the default bucket size, refill rate, and refill interval.
-- **Per-Key Limits**: Each key has its own bucket, so you can limit the rate of operations per key.
+- **Customizable**: You can tune the default bucket size, refill rate, and refill interval.
+- **Per-Key Limits**: Rhythm introduces the concept of VIPs, who have their own tunable limits. This allows granular control over the limit that each individual has.
 
 ## Usage
 
@@ -32,16 +32,36 @@ if rate_limiter.request(my_key) {
 
 In this example, `my_key` is the key associated with the operation. The `request` method returns `true` if the operation is allowed (i.e., the bucket associated with the key is not empty), and `false` otherwise.
 
+By default, all keys will have the rate limiter's default bucket size, refill rate, and refill interval.
+
+To customize this, you can mark a key as a VIP:
+
+```rust
+rate_limiter.set_vip(
+    vip_key.clone(),
+    vip_bucket_size,
+    vip_refill_rate
+);
+```
+
 ## Installation
 
 Add the following to your Cargo.toml:
 
-```toml
-[dependencies]
-rhythm-rate-limiter = "0.1.0"
-```
+Run `cargo add rhythm` to add the latest version to your `Cargo.toml`.
 
 Then, run `cargo build` to build your project.
+
+## TODO
+
+Performance improvements:
+
+1. Per-bucket mutex to avoid holding the table lock for each request.
+2. Pruning of old buckets to avoid memory bloat over long time.
+
+Functionality improvements:
+
+1. VIP buckets should be able to set their own refill interval.
 
 ## License
 
