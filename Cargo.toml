@@ -9,3 +9,4 @@ description = "Rate limiter which allows VIPs, written in Rust"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+# This project has no dependencies other than std
