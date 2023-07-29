@@ -3,7 +3,7 @@ use std::{collections::HashMap, time::{Instant, Duration}, hash::Hash};
 pub struct RateLimiter<T: Hash + Eq> {
     default_bucket_size: u32,
     default_refill_rate: u32,
-    default_refill_interval_ms: u64,
+    default_refill_interval: Duration,
     buckets: HashMap<T, Bucket>,
 }
 
@@ -15,7 +15,7 @@ struct Bucket {
     // How many tokens to add per refill
     refill_rate: u32,
     // How often to refill the bucket
-    refill_interval_ms: u64,
+    refill_interval: Duration,
     // When the bucket was last refilled
     last_filled: Instant,
 
@@ -37,11 +37,11 @@ impl<T: Hash + Eq> RateLimiter<T> {
     /// # Returns
     ///
     ///    A new RateLimiter with the given default values.
-    pub fn new(default_bucket_size: u32, default_refill_rate:u32, default_refill_interval_ms:u64) -> Self {
+    pub fn new(default_bucket_size: u32, default_refill_rate:u32, default_refill_interval:Duration) -> Self {
         Self {
             default_bucket_size: default_bucket_size,
             default_refill_rate: default_refill_rate,
-            default_refill_interval_ms: default_refill_interval_ms,
+            default_refill_interval: default_refill_interval,
             buckets: HashMap::new(),
         }
     }
@@ -63,7 +63,7 @@ impl<T: Hash + Eq> RateLimiter<T> {
             // Start the bucket full
             tokens: self.default_bucket_size,
             refill_rate: self.default_refill_rate,
-            refill_interval_ms: self.default_refill_interval_ms,
+            refill_interval: self.default_refill_interval,
             last_filled: Instant::now(),
             requests_allowed: 0,
             requests_denied: 0,
@@ -86,7 +86,7 @@ impl<T: Hash + Eq> RateLimiter<T> {
             // Start the bucket full
             tokens: bucket_size,
             refill_rate: refill_rate,
-            refill_interval_ms: self.default_refill_interval_ms,
+            refill_interval: self.default_refill_interval,
             last_filled: Instant::now(),
             requests_allowed: 0,
             requests_denied: 0,
@@ -104,8 +104,8 @@ impl Bucket {
 
         let time_passed = now.duration_since(self.last_filled);
 
-        let ms_passed = time_passed.as_millis() as u64;
-        let tokens_to_add = ms_passed * self.refill_rate as u64 / self.refill_interval_ms;
+        let intervals_passed = time_passed.as_nanos() / self.refill_interval.as_nanos();
+        let tokens_to_add = intervals_passed * self.refill_rate as u128;
 
         // Add the tokens to the bucket, but don't exceed the bucket size
         self.tokens = (self.tokens + tokens_to_add as u32).min(self.size);
@@ -113,8 +113,7 @@ impl Bucket {
         // Q: Why not just set the last_filled to now?
         // A: Because of integer division, we would often under-fill the bucket. If we update the last_filled
         //      time naively, then multiple calls to refill() in a row will result in the bucket never being refilled.
-        self.last_filled = self.last_filled +
-            Duration::from_millis((tokens_to_add * self.refill_interval_ms / self.refill_rate as u64) as u64);
+        self.last_filled = self.last_filled + Duration::from_nanos((intervals_passed * self.refill_interval.as_nanos()) as u64);
     }
 
     fn request(&mut self) -> bool {
@@ -138,30 +137,30 @@ mod tests {
 
     #[test]
     fn test_slow_limiter() {
-        test_limiter(10, 1, 1000);
+        test_limiter(10, 1, Duration::from_secs(1));
     }
 
     #[test]
     fn test_fast_limiter() {
-        test_limiter(10, 1, 1);
+        test_limiter(10, 1, Duration::from_millis(1));
     }
 
     #[test]
     fn test_fast_big_limiter() {
-        test_limiter(1000000, 1, 1);
+        test_limiter(1000000, 1, Duration::from_millis(1));
     }
 
     #[test]
     fn test_big_refill_limiter() {
-        test_limiter(100, 100, 1);
+        test_limiter(100, 100, Duration::from_millis(10));
     }
 
-    fn test_limiter(bucketsize: u32, refillrate: u32, refillinterval_ms: u64) {
+    fn test_limiter(bucketsize: u32, refillrate: u32, refill_interval: Duration) {
         // Rate limiter with default bucket size of 10 and refill rate of 1 token per 100 ms
         let mut ratelimiter: RateLimiter<String> = RateLimiter::new(
             bucketsize,
             refillrate,
-            refillinterval_ms
+            refill_interval
         );
 
         // Test that we can make a bunch of requests in a row
@@ -172,7 +171,7 @@ mod tests {
         }
 
         // Test that we can't make an extra request
-        if start_time.elapsed().as_millis() < refillinterval_ms as u128 {
+        if start_time.elapsed() < refill_interval {
             assert!(!ratelimiter.request(sample_key.clone()));
         }
 
@@ -189,10 +188,9 @@ mod tests {
 
         // Test that we can make an extra request after for bucket refill
         let start_time = Instant::now();
-        std::thread::sleep(Duration::from_millis(refillinterval_ms));
-        let actual_sleep_time = start_time.elapsed().as_millis();
-        let refills_expected = actual_sleep_time as u32 / refillinterval_ms as u32;
-        let tokens_expected = bucketsize.min(refills_expected * refillrate);
+        std::thread::sleep(refill_interval);
+        let refills_expected = start_time.elapsed().as_nanos() / refill_interval.as_nanos();
+        let tokens_expected: u128 = (bucketsize as u128).min(refills_expected * refillrate as u128);
 
         for _ in 0..tokens_expected {
             assert!(ratelimiter.request(sample_key.clone()));
@@ -202,13 +200,14 @@ mod tests {
     #[test]
     fn test_vip() {
         // Rate limiter with default bucket size of 10 and refill rate of 1 token per second
-        let mut ratelimiter: RateLimiter<String> = RateLimiter::new(10, 1, 1000);
+        let mut ratelimiter: RateLimiter<String> = RateLimiter::new(10, 1, Duration::from_secs(1));
+
+        let normal_key = "Elliot".to_string();
 
         // There's someone super important who needs to make 100 requests in a row, let them do it.
         let vip_bucket_size = 100;
         let vip_refill_rate = 10;
-        let vip_key = "Elliot".to_string();
-        let other_key = "Waffle".to_string();
+        let vip_key = "Waffle".to_string();
 
         ratelimiter.set_vip(vip_key.clone(), vip_bucket_size, vip_refill_rate);
 
@@ -217,9 +216,9 @@ mod tests {
             assert!(ratelimiter.request(vip_key.clone()));
             // The other requesters... not so much
             if i < 10 {
-                assert!(ratelimiter.request(other_key.clone()));
+                assert!(ratelimiter.request(normal_key.clone()));
             } else {
-                assert!(!ratelimiter.request(other_key.clone()));
+                assert!(!ratelimiter.request(normal_key.clone()));
             }
         }
     }
