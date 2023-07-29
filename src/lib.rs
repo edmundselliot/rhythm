@@ -1,10 +1,15 @@
-use std::{collections::HashMap, time::{Instant, Duration}, hash::Hash};
+use std::{collections::HashMap, time::{Instant, Duration}, hash::Hash, sync::Mutex};
 
+/// A rate limiter that uses a token bucket algorithm.
+/// This rate limiter is thread-safe.
 pub struct RateLimiter<T: Hash + Eq> {
     default_bucket_size: u32,
     default_refill_rate: u32,
     default_refill_interval: Duration,
-    buckets: HashMap<T, Bucket>,
+    buckets: Mutex<HashMap<T, Bucket>>,
+
+    // Counters
+    counters: Mutex<RateLimiterStats>,
 }
 
 struct Bucket {
@@ -20,6 +25,10 @@ struct Bucket {
     last_filled: Instant,
 
     // Counters
+    counters: RateLimiterStats,
+}
+
+struct RateLimiterStats {
     requests_allowed:u64,
     requests_denied:u64,
 }
@@ -32,7 +41,7 @@ impl<T: Hash + Eq> RateLimiter<T> {
     ///
     /// * `default_bucket_size` - The default bucket size.
     /// * `default_refill_rate` - The default refill rate (how many tokens will be added to each bucket on each refill).
-    /// * `default_refill_interval_ms` - The default refill interval (how often the bucket will be refilled).
+    /// * `default_refill_interval` - The default refill interval (how often the bucket will be refilled).
     ///
     /// # Returns
     ///
@@ -42,7 +51,11 @@ impl<T: Hash + Eq> RateLimiter<T> {
             default_bucket_size: default_bucket_size,
             default_refill_rate: default_refill_rate,
             default_refill_interval: default_refill_interval,
-            buckets: HashMap::new(),
+            buckets: Mutex::new(HashMap::new()),
+            counters: Mutex::new(RateLimiterStats {
+                requests_allowed: 0,
+                requests_denied: 0,
+            }),
         }
     }
 
@@ -58,44 +71,65 @@ impl<T: Hash + Eq> RateLimiter<T> {
     /// * `true` if the request is allowed
     /// * `false` if the request is not allowed
     pub fn request(&mut self, key: T) -> bool {
-        let bucket = self.buckets.entry(key).or_insert(Bucket {
+        let mut buckets = self.buckets.lock().unwrap();
+
+        let bucket = buckets.entry(key).or_insert(Bucket {
             size: self.default_bucket_size,
             // Start the bucket full
             tokens: self.default_bucket_size,
             refill_rate: self.default_refill_rate,
             refill_interval: self.default_refill_interval,
             last_filled: Instant::now(),
-            requests_allowed: 0,
-            requests_denied: 0,
+            counters: RateLimiterStats {
+                requests_allowed: 0,
+                requests_denied: 0,
+            },
         });
 
-        bucket.request()
+        // If required, we can put a mutex<arc> on each bucket to
+        //    avoid holding table-level lock when doing a request
+        let success = bucket.request();
+        drop(buckets);
+
+        let mut counters = self.counters.lock().unwrap();
+        if success {
+            counters.requests_allowed += 1;
+        } else {
+            counters.requests_denied += 1;
+        }
+        drop(counters);
+
+        success
     }
 
     /// Set the bucket size, refill rate, and refill interval for a given key.
+    /// If the VIP key already exists, it will be updated and refilled.
+    /// If the VIP key does not exist, it will be created.
     ///
     /// # Arguments
     ///
-    /// * `key` - The key to  of the VIP we are making a special case for.
+    /// * `key` - The key to the VIP we are making a special case for.
     /// * `bucket_size` - The size of the VIP's bucket.
     /// * `refill_rate` - The refill rate of the VIP's bucket.
-    /// * `refill_interval_ms` - The refill interval of the VIP's bucket.
-    fn set_vip(&mut self, key: T, bucket_size: u32, refill_rate: u32) {
-        let bucket = self.buckets.entry(key).or_insert(Bucket {
+    pub fn set_vip(&mut self, key: T, bucket_size: u32, refill_rate: u32) {
+        let mut buckets = self.buckets.lock().unwrap();
+
+        let bucket = buckets.entry(key).or_insert(Bucket {
             size: bucket_size,
             // Start the bucket full
             tokens: bucket_size,
             refill_rate: refill_rate,
             refill_interval: self.default_refill_interval,
             last_filled: Instant::now(),
-            requests_allowed: 0,
-            requests_denied: 0,
+            counters: RateLimiterStats {
+                requests_allowed: 0,
+                requests_denied: 0,
+            },
         });
 
         bucket.last_filled = Instant::now();
         bucket.tokens = bucket.size;
     }
-
 }
 
 impl Bucket {
@@ -121,10 +155,10 @@ impl Bucket {
 
         if self.tokens > 0 {
             self.tokens -= 1;
-            self.requests_allowed += 1;
+            self.counters.requests_allowed += 1;
             true
         } else {
-            self.requests_denied += 1;
+            self.counters.requests_denied += 1;
             false
         }
     }
