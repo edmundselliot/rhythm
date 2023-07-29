@@ -3,6 +3,8 @@ name = "rhythm"
 version = "0.0.1"
 edition = "2021"
 author = "Elliot Edmunds"
+license = "MIT OR Apache-2.0"
+description = "Rate limiter which allows VIPs, written in Rust"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

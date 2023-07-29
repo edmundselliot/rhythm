@@ -92,8 +92,6 @@ impl<T: Hash + Eq> RateLimiter<T> {
 impl Bucket {
     fn refill(&mut self) {
         let now = Instant::now();
-        let orig_tokens = self.tokens;
-
 
         let time_passed = now.duration_since(self.last_filled);
 
