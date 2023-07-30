@@ -10,3 +10,7 @@ description = "Rate limiter which allows VIPs, written in Rust"
 
 [dependencies]
 # This project has no dependencies other than std
+
+[dev-dependencies]
+# This is needed for testing async functions, but is only included in dev builds
+tokio = { version = "1", features = ["full"] }

@@ -1,6 +1,6 @@
-# Rhythm's Rate Limiter
+# Rate limit with Rhythm
 
-Rhythm's Rate Limiter is a thread-safe rate limiting library implemented in Rust. It allows you to limit the rate of operations, such as requests to a server, by associating these operations with keys. Each key has a "bucket" of tokens, and each operation consumes a token. When the bucket is empty, the operations are limited.
+Rhythm's `RateLimiter` is a thread-safe rate limiting library implemented in Rust. It allows you to limit the rate of operations, such as requests to a server, by associating these operations with keys. Each key has a "bucket" of tokens, and each operation consumes a token. When the bucket is empty, the operations are limited.
 
 ## Features
 
@@ -57,7 +57,7 @@ Then, run `cargo build` to build your project.
 Performance improvements:
 
 1. Per-bucket mutex to avoid holding the table lock for each request.
-2. Pruning of old buckets to avoid memory bloat over long time.
+2. Move pruning to a LRU-cache style trimming.
 
 Functionality improvements:
 

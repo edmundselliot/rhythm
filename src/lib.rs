@@ -130,6 +130,32 @@ impl<T: Hash + Eq> RateLimiter<T> {
         bucket.last_filled = Instant::now();
         bucket.tokens = bucket.size;
     }
+
+    /// Prune buckets that have not been used in the last `age` duration.
+    ///
+    /// # Arguments
+    ///
+    /// * `age` - The age of buckets to prune.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use std::time::Duration;
+    /// use rhythm::RateLimiter;
+    ///
+    /// let mut rl = RateLimiter::new(10, 1, Duration::from_secs(1));
+    ///
+    /// // Do some work here...
+    ///
+    /// // Prune buckets that have not been used in the last 5 seconds
+    /// rl.prune(Duration::from_secs(5));
+    /// ```
+    pub fn prune(&self, age: Duration) {
+        let now = Instant::now();
+        let mut buckets = self.buckets.lock().unwrap();
+        buckets.retain(|_, bucket| now.duration_since(bucket.last_filled) <= age);
+    }
+
 }
 
 impl Bucket {
@@ -137,17 +163,24 @@ impl Bucket {
         let now = Instant::now();
 
         let time_passed = now.duration_since(self.last_filled);
-
         let intervals_passed = time_passed.as_nanos() / self.refill_interval.as_nanos();
-        let tokens_to_add = intervals_passed * self.refill_rate as u128;
 
         // Add the tokens to the bucket, but don't exceed the bucket size
+        let tokens_to_add = intervals_passed * self.refill_rate as u128;
         self.tokens = (self.tokens + tokens_to_add as u32).min(self.size);
 
+        // --- Setting last filled ---
         // Q: Why not just set the last_filled to now?
         // A: Because of integer division, we would often under-fill the bucket. If we update the last_filled
         //      time naively, then multiple calls to refill() in a row will result in the bucket never being refilled.
-        self.last_filled = self.last_filled + Duration::from_nanos((intervals_passed * self.refill_interval.as_nanos()) as u64);
+
+        // Note: commented line below leads to issues because over a long enough time, because last_filled
+        //         will drift if we only set it relative to itself.
+        // >> self.last_filled = self.last_filled + Duration::from_nanos((intervals_passed * self.refill_interval.as_nanos()) as u64);
+
+        // Instead, we need to set it relative to the current time.
+        let remainder_nanos = time_passed.as_nanos() % self.refill_interval.as_nanos();
+        self.last_filled = now - Duration::from_nanos(remainder_nanos as u64);
     }
 
     fn request(&mut self) -> bool {
@@ -168,6 +201,7 @@ impl Bucket {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio;
 
     #[test]
     fn test_slow_limiter() {
@@ -255,5 +289,34 @@ mod tests {
                 assert!(!ratelimiter.request(normal_key.clone()));
             }
         }
+    }
+
+    #[tokio::test]
+    async fn test_limiter_async() {
+        let mut ratelimiter: RateLimiter<String> = RateLimiter::new(10, 1, Duration::from_secs(1));
+        let key = "Honey".to_string();
+
+        for _ in 0..10 {
+            assert!(ratelimiter.request(key.clone()));
+        }
+        assert!(!ratelimiter.request(key.clone()));
+    }
+
+    #[test]
+    fn test_prune() {
+        let mut ratelimiter: RateLimiter<String> = RateLimiter::new(10, 1, Duration::from_secs(1));
+
+        ratelimiter.request("Lillo".to_string());
+
+        std::thread::sleep(Duration::from_millis(10));
+        assert_eq!(ratelimiter.buckets.lock().unwrap().len(), 1);
+
+        ratelimiter.request("Dawn".to_string());
+        ratelimiter.prune(Duration::from_millis(10));
+        assert_eq!(ratelimiter.buckets.lock().unwrap().len(), 1);
+
+        std::thread::sleep(Duration::from_millis(10));
+        ratelimiter.prune(Duration::from_millis(10));
+        assert_eq!(ratelimiter.buckets.lock().unwrap().len(), 0);
     }
 }
