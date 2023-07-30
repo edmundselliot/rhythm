@@ -143,7 +143,7 @@ impl<T: Hash + Eq> RateLimiter<T> {
     /// use std::time::Duration;
     /// use rhythm::RateLimiter;
     ///
-    /// let mut rl = RateLimiter::new(10, 1, Duration::from_secs(1));
+    /// let mut rl: RateLimiter<String> = RateLimiter::new(10, 1, Duration::from_secs(1));
     ///
     /// // Do some work here...
     ///
